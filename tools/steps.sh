@@ -353,9 +353,16 @@ no_args() {
 
 # Does Wings answer through the tunnel at the node's address? Wings says "401" (no key) to a visit without a key:
 # that is the proof that the whole road works (Cloudflare → tunnel → Wings).
+# The new address is NOT looked up in DNS: a DNS server that hears "not found" in its first seconds keeps that answer
+# for 30 minutes. Every address of ours through Cloudflare leads to the same Cloudflare doors, so the check goes to
+# the door the panel's (old) address uses.
 node_reachable() {
-  local code
-  code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "https://$(env_value NODE_ADDRESS)/api/system" || true)
+  local code address panel ip resolve=()
+  address=$(env_value NODE_ADDRESS)
+  panel=$(env_value PANEL_URL) panel=${panel#https://}
+  if [[ -n $panel ]]; then ip=$(getent ahostsv4 "$panel" | awk '{print $1; exit}'); fi
+  if [[ -n ${ip:-} ]]; then resolve=(--resolve "$address:443:$ip"); fi
+  code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "${resolve[@]}" "https://$address/api/system" || true)
   [[ $code == 401 ]]
 }
 
@@ -436,6 +443,7 @@ install_settings() {
 # This node's settings. Made by ./rustfield-node-install from the join code. NEVER in git (the repo is public).
 NODE_NAME=${JOIN[NODE_NAME]}
 NODE_ADDRESS=${JOIN[NODE_ADDRESS]}
+PANEL_URL=${JOIN[PANEL_URL]}
 TUNNEL_TOKEN=${JOIN[TUNNEL_TOKEN]}
 EOT
   mkdir -p "${WINGS_FOLDERS[@]}"
