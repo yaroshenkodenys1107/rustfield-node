@@ -295,7 +295,7 @@ docker_install() {
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL "https://download.docker.com/linux/$os/gpg" -o /etc/apt/keyrings/docker.asc
   chmod a+r /etc/apt/keyrings/docker.asc
-  # shellcheck source=/dev/null # a system file (Ubuntu/Debian name and version)
+  # shellcheck source=/dev/null # for the ". /etc/os-release" inside the text below (a system file)
   cat >/etc/apt/sources.list.d/docker.sources <<EOF
 Types: deb
 URIs: https://download.docker.com/linux/$os
