@@ -1,0 +1,7 @@
+# This repo is PUBLIC: the node's real settings (keys) never go into git.
+.env
+.env.*
+!.env.example
+*.save
+*.swp
+*~

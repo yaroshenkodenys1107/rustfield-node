@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Rustfield.eu node: the day-to-day script. Status, start, stop, restart and update of this game server node.
+# Also works as the short command `rustfield-node` (made by ./rustfield-node-install). Run `rustfield-node help`.
+# Each command is only a list of steps; the steps live in tools/steps.sh.
+set -euo pipefail
+
+ROOT=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")   # the project folder, also when called through the short command
+PROJECT=rustfield-node
+cd "$ROOT"
+# shellcheck source=tools/steps.sh # ShellCheck runs from the project folder (.github/workflows/checks.yml)
+source "$ROOT/tools/steps.sh"
+
+CMD=${1:-help}
+ARGS=("${@:2}")
+TITLE=$CMD
+
+case $CMD in
+  status)         STEPS=(no_args need_docker need_installed show_status) ;;
+  start)          STEPS=(no_args need_root need_docker need_installed begin start_node) ;;
+  stop)           STEPS=(no_args need_root need_docker need_installed begin stop_node) ;;
+  restart)        STEPS=(no_args need_root need_docker need_installed begin restart_node) ;;
+  update)         STEPS=(no_args need_root need_docker need_installed begin update_node) ;;
+  help|-h|--help) STEPS=(show_help) ;;
+  *)
+    ui_fail "Unknown command \"$CMD\"."
+    ui_detail "See the list: $PROJECT help"
+    exit 1
+    ;;
+esac
+
+run_steps "${STEPS[@]}"

@@ -1,0 +1,47 @@
+#!/bin/sh
+# Checks that the commit message follows our format (the same as the main project, rustfield.eu).
+# One format in both repos keeps the history easy to read.
+#
+#   type(module): short title in simple English
+#
+#   One to three short sentences: what changed and what it means for the user.
+#
+# Turned on once per clone with: git config core.hooksPath .githooks
+
+msg_file="$1"
+
+# Ignore comment lines that git adds to the message.
+title=$(grep -v '^#' "$msg_file" | head -n 1)
+second=$(grep -v '^#' "$msg_file" | sed -n '2p')
+
+# Merge and revert commits made by git itself are allowed as they are.
+case "$title" in
+  "Merge "*|"Revert "*) exit 0 ;;
+esac
+
+fail() {
+  echo "Commit refused: $1" >&2
+  echo "" >&2
+  echo "Use this format:" >&2
+  echo "  type(module): short title in simple English" >&2
+  echo "" >&2
+  echo "  One to three short sentences." >&2
+  echo "" >&2
+  echo "Types: feat, fix, docs, infra, refactor, test" >&2
+  echo "Your title: $title" >&2
+  exit 1
+}
+
+if ! printf '%s\n' "$title" | grep -Eq '^(feat|fix|docs|infra|refactor|test)\([a-z0-9-]+\): [^ ].*$'; then
+  fail "the title does not match 'type(module): title'."
+fi
+
+if [ "${#title}" -gt 72 ]; then
+  fail "the title is longer than 72 characters."
+fi
+
+if [ -n "$second" ]; then
+  fail "the second line must be empty (it separates the title from the text)."
+fi
+
+exit 0

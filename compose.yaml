@@ -1,0 +1,67 @@
+# Rustfield.eu node: Wings (Pterodactyl's worker: starts, stops and watches the game servers) and the Cloudflare
+# Tunnel (the panel's road to Wings). Started with: rustfield-node start. Values come from .env (made by
+# ./rustfield-node-install from the join code; never in git).
+# No public port here: the tunnel calls out to Cloudflare. The game servers are NOT in this file: Wings makes one box
+# per game server on this server's Docker, and Docker opens that server's game ports while it exists.
+# Memory fences and log limits only keep order (one broken box restarts alone, logs never fill the disk).
+
+name: rustfield-node
+
+services:
+  wings:
+    image: ghcr.io/pterodactyl/wings:v1.13.4
+    container_name: rustfield-node-wings
+    restart: unless-stopped
+    tty: true
+    environment:
+      TZ: UTC
+      # The user the game servers' files belong to (Wings's standard).
+      WINGS_UID: "988"
+      WINGS_GID: "988"
+      WINGS_USERNAME: pterodactyl
+    networks: [node]
+    # Wings controls this server's Docker (it makes the game server boxes), so its folders have the same path inside
+    # and outside its box (Wings's official Docker example).
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker/containers/:/var/lib/docker/containers/
+      - /etc/pterodactyl/:/etc/pterodactyl/
+      - /var/lib/pterodactyl/:/var/lib/pterodactyl/
+      - /var/log/pterodactyl/:/var/log/pterodactyl/
+      - /tmp/pterodactyl/:/tmp/pterodactyl/
+      - /run/wings:/run/wings
+      - /etc/ssl/certs:/etc/ssl/certs:ro
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    # No health check: the image has no shell. `rustfield-node status` checks Wings through the tunnel instead.
+
+  # The tunnel: its route (<node>.<domain> → http://wings:8080) is kept in Cloudflare, made by `rustfield node add`.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.4
+    container_name: rustfield-node-cloudflared
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    networks: [node]
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+      # Status page for the health check, only inside this box.
+      TUNNEL_METRICS: 127.0.0.1:20241
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    # Healthy = connected to Cloudflare.
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  node:

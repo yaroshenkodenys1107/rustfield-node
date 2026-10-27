@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Rustfield.eu node: turns this server into a game server node for the panel. Needs the join code that
+# `rustfield node add` prints on the main server (it prints the whole install line, with this script in it).
+# Runs only as ./rustfield-node-install <join code> from this folder (no short command, on purpose).
+set -euo pipefail
+
+ROOT=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+PROJECT=rustfield-node
+# shellcheck source=tools/steps.sh
+source "$ROOT/tools/steps.sh"
+
+ARGS=("$@")
+STEPS=(need_root need_project_folder install_begin install_check_installed install_read_code install_docker
+  install_firewall install_settings install_images install_start install_connected install_shortcut)
+run_steps "${STEPS[@]}"
