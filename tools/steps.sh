@@ -582,7 +582,7 @@ restart_node() { ui_do "Restarting…" "Wings and the tunnel restarted" docker c
 update_node() {
   local renewed=0
   ui_do "Getting the newest code…" "Newest code downloaded" git -C "$ROOT" pull --ff-only -q || exit 1
-  ui_line "Code: $(git -C "$ROOT" log -1 --format='%h · %s' | cut -c1-44)"
+  ui_line "Code: $(git -C "$ROOT" log -1 --format='%h · %s' | awk '{ if (length($0) > 44) print substr($0, 1, 43) "…"; else print }')"
   if ! node_read_saved; then ui_fail "The saved settings are incomplete: paste the install line again."; exit 1; fi
   if [[ $(cat "$SETTINGS_SUM" 2>/dev/null) != "$(node_settings_sum)" ]]; then
     node_write_settings
@@ -600,9 +600,17 @@ update_node() {
   done_line
 }
 
+# After a (re)start Wings needs a few seconds before it answers: wait up to ~30 s with a spinner, then say so.
 done_line() {
-  if node_reachable; then ui_ok "Done. The panel can reach this node."
-  else ui_ok "Done."; ui_detail "Not reachable through the tunnel yet: see $PROJECT status"; fi
+  local i
+  ui_spinner_start "Checking the road: Cloudflare → tunnel → Wings…"
+  for ((i = 0; i < 10; i++)); do
+    if node_reachable; then ui_spinner_stop; ui_ok "Done. The panel can reach this node."; return; fi
+    sleep 3
+  done
+  ui_spinner_stop
+  ui_ok "Done."
+  ui_detail "Not reachable through the tunnel yet: see $PROJECT status"
 }
 
 # ── Steps: status ──────────────────────────────────────────────────────────────────────────────────────────────
