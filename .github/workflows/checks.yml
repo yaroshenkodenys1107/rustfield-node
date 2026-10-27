@@ -1,5 +1,6 @@
 # Automatic checks on every push: the spell-checker for our shell scripts (ShellCheck, already on GitHub's machines).
-# This repo is public, so these runs cost no GitHub minutes. -x also checks tools/steps.sh, which the scripts read.
+# This repo is public, so these runs cost no GitHub minutes. tools/steps.sh (read by the scripts) is listed too:
+# -x only follows it, it does not report its problems.
 name: checks
 
 on:
@@ -17,6 +18,6 @@ jobs:
       - name: Check the shell scripts
         run: |
           shellcheck --version | sed -n 2p
-          shellcheck -x rustfield-node rustfield-node-install rustfield-node-delete .githooks/commit-msg
+          shellcheck -x rustfield-node rustfield-node-install rustfield-node-delete tools/steps.sh .githooks/commit-msg
       - name: Check the compose file
         run: TUNNEL_TOKEN=check docker compose config --quiet

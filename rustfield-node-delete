@@ -10,6 +10,6 @@ PROJECT=rustfield-node
 source "$ROOT/tools/steps.sh"
 
 ARGS=("$@")
-STEPS=(need_root need_project_folder no_args delete_begin delete_scan delete_show delete_ask delete_games delete_ours
+STEPS=(need_root need_project_folder no_args delete_begin delete_scan delete_show delete_ask delete_ours delete_games
   delete_networks delete_images delete_files delete_folder delete_done)
 run_steps "${STEPS[@]}"

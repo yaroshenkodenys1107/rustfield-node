@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034,SC2153 # shares variables with the scripts (ShellCheck checks each file alone)
 # Rustfield.eu node: the shared steps of ./rustfield-node, ./rustfield-node-install and ./rustfield-node-delete.
 # Every step is one bash function. A script is only a list of step names (STEPS=(...)), run in order by run_steps.
 # A step checks what it needs first (a wrong order stops with a clear message) and is safe to run again.
@@ -317,6 +318,9 @@ GAME_DATA=/var/lib/pterodactyl      # the game servers' files (maps, player data
 GAME_LABEL=Service=Pterodactyl      # Wings puts this label on every game server box
 GAME_NETWORK=pterodactyl_nw         # Wings makes this network for the game servers
 LOG_ROTATE=/etc/logrotate.d/$PROJECT
+SETTINGS_SUM=/etc/pterodactyl/rustfield-settings.md5   # see install_settings
+# Game images are not ours to name, but they come from these places (Pterodactyl's yolks and egg images).
+GAME_IMAGES='^ghcr\.io/(pterodactyl|parkervcp|ptero-eggs|pelican-eggs)/|(^|/)(yolks|installers)[:/]'
 # The join code holds these keys (made by `rustfield node add` on the main server).
 JOIN_KEYS=(NODE_NAME NODE_ADDRESS PANEL_URL WINGS_UUID WINGS_TOKEN_ID WINGS_TOKEN TUNNEL_TOKEN)
 
@@ -384,10 +388,14 @@ install_check_installed() {
 }
 
 # Reads the join code: base64 of "KEY=value" lines. Only known keys and plain characters are taken (it is pasted
-# text, so nothing in it may ever run as a command).
+# text, so nothing in it may ever run as a command). The install line gives it through <<< (then it never shows in
+# the process list); an older line gives it as a word. No code: the saved settings of an earlier try are used.
 install_read_code() {
   local code=${ARGS[0]:-} text line key value
-  if [[ -z $code || ${#ARGS[@]} -gt 1 ]]; then
+  if ((${#ARGS[@]} > 1)); then ui_fail "Only one join code, please."; exit 1; fi
+  if [[ -z $code && ! -t 0 ]]; then IFS= read -r code || true; fi
+  if [[ -z $code ]]; then
+    if node_read_saved; then ui_step "Saved settings: node ${JOIN[NODE_NAME]} (${JOIN[NODE_ADDRESS]})"; return; fi
     ui_fail "The join code is missing."
     ui_detail "Copy the whole install line from the main server (rustfield node add)."
     exit 1
@@ -436,18 +444,39 @@ install_firewall() {
 }
 
 # Writes the node's settings: .env (the tunnel key; never in git), Wings's settings file, and the log limit for
-# Wings's own log file. Only root may read the two files with keys.
+# Wings's own log file. Only root may read the two files with keys. A fingerprint of what this code writes is kept
+# (SETTINGS_SUM), so `update` can tell when a newer version of this code writes them differently.
 install_settings() {
+  node_write_settings
+  ui_step "Settings written (only root can read them)"
+}
+
+node_write_settings() {
   umask 077
-  cat >"$ROOT/.env" <<EOT
+  node_env_text >"$ROOT/.env"
+  mkdir -p "${WINGS_FOLDERS[@]}"
+  node_wings_text >"$WINGS_CONFIG"
+  umask 022
+  node_rotate_text >"$LOG_ROTATE"
+  node_settings_sum >"$SETTINGS_SUM"
+}
+
+# The fingerprint of what THIS code writes from the saved values (not of the files: Wings rewrites its own file).
+node_settings_sum() { { node_env_text; node_wings_text; node_rotate_text; } | md5sum | cut -d' ' -f1; }
+
+# The three files, as text.
+node_env_text() {
+  cat <<EOT
 # This node's settings. Made by ./rustfield-node-install from the join code. NEVER in git (the repo is public).
 NODE_NAME=${JOIN[NODE_NAME]}
 NODE_ADDRESS=${JOIN[NODE_ADDRESS]}
 PANEL_URL=${JOIN[PANEL_URL]}
 TUNNEL_TOKEN=${JOIN[TUNNEL_TOKEN]}
 EOT
-  mkdir -p "${WINGS_FOLDERS[@]}"
-  cat >"$WINGS_CONFIG" <<EOT
+}
+
+node_wings_text() {
+  cat <<EOT
 # Wings settings for this node. Made by ./rustfield-node-install from the join code. Wings adds its defaults.
 debug: false
 uuid: ${JOIN[WINGS_UUID]}
@@ -466,7 +495,8 @@ system:
   # Wings's own log rotation would only work inside its box: $LOG_ROTATE does it on the server.
   enable_log_rotate: false
 docker:
-  # The game servers' network. Its own address range, so it never meets the one Docker gives our compose network.
+  # The game servers' network, with its own fixed address range (Wings's default 172.18 is often taken by Docker's
+  # own networks). If something on this server already uses 172.30, Wings cannot start: change it here.
   network:
     interface: 172.30.0.1
     interfaces:
@@ -475,9 +505,11 @@ docker:
         gateway: 172.30.0.1
 remote: ${JOIN[PANEL_URL]}
 EOT
-  umask 022
-  # Order, not server size: only the newest 30 MB of Wings's log file are kept (like every container's log).
-  cat >"$LOG_ROTATE" <<EOT
+}
+
+# Order, not server size: only the newest 30 MB of Wings's log file are kept (like every container's log).
+node_rotate_text() {
+  cat <<EOT
 # Made by ./rustfield-node-install (repo rustfield-node). Removed by ./rustfield-node-delete.
 /var/log/pterodactyl/*.log {
     size 10M
@@ -487,8 +519,22 @@ EOT
     notifempty
 }
 EOT
-  ui_step "Settings written (only root can read them)"
 }
+
+# The settings of an earlier install (its .env and Wings's settings file), so install can be tried again and update
+# can renew Wings's settings, both without the join code. Returns 1 if they are not (all) there.
+node_read_saved() {
+  local key
+  if [[ ! -f $ROOT/.env || ! -f $WINGS_CONFIG ]]; then return 1; fi
+  JOIN[NODE_NAME]=$(env_value NODE_NAME) JOIN[NODE_ADDRESS]=$(env_value NODE_ADDRESS)
+  JOIN[TUNNEL_TOKEN]=$(env_value TUNNEL_TOKEN) JOIN[PANEL_URL]=$(env_value PANEL_URL)
+  JOIN[WINGS_UUID]=$(yaml_top uuid) JOIN[WINGS_TOKEN_ID]=$(yaml_top token_id) JOIN[WINGS_TOKEN]=$(yaml_top token)
+  # Installs before 2026-10-27 have no PANEL_URL in .env: Wings's file has it.
+  if [[ -z ${JOIN[PANEL_URL]} ]]; then JOIN[PANEL_URL]=$(yaml_top remote); fi
+  for key in "${JOIN_KEYS[@]}"; do if [[ -z ${JOIN[$key]:-} ]]; then return 1; fi; done
+}
+# A top-level value in Wings's settings file (Wings may put quotes around it when it rewrites the file): <key>
+yaml_top() { sed -n "s/^$1: *//p" "$WINGS_CONFIG" | head -n 1 | tr -d "'\""; }
 
 install_images() {
   ui_do "Downloading Wings and the tunnel…" "Images downloaded" docker compose --progress quiet pull || exit 1
@@ -513,7 +559,8 @@ install_connected() {
   done
   ui_spinner_stop
   ui_fail "Wings does not answer at $(env_value NODE_ADDRESS)."
-  ui_detail "Wait a minute, then: ./rustfield-node-install again (safe)."
+  ui_detail "Wait a minute, then run ./rustfield-node-install again"
+  ui_detail "(it uses the saved settings: no code needed)."
   exit 1
 }
 
@@ -530,14 +577,26 @@ start_node()   { ui_do "Starting…" "Wings and the tunnel started" docker compo
 stop_node()    { ui_do "Stopping…" "Wings and the tunnel stopped" docker compose --progress quiet stop || exit 1; ui_ok "Stopped. The game servers keep running."; }
 restart_node() { ui_do "Restarting…" "Wings and the tunnel restarted" docker compose --progress quiet restart || exit 1; done_line; }
 
-# The newest code of this repo, then the image versions it names.
+# The newest code of this repo, its settings (a newer version may write them differently, e.g. a changed port), then
+# the image versions it names. Wings restarts only if its settings changed; the game servers keep running.
 update_node() {
-  ui_do "Getting the newest code…" "Code: $(git -C "$ROOT" log -1 --format=%h)" git -C "$ROOT" pull --ff-only -q || exit 1
-  # The line above showed the old commit if the pull brought a new one: show the real one.
-  ui_line "now at $(git -C "$ROOT" log -1 --format='%h · %s' | cut -c1-44)"
+  local renewed=0
+  ui_do "Getting the newest code…" "Newest code downloaded" git -C "$ROOT" pull --ff-only -q || exit 1
+  ui_line "Code: $(git -C "$ROOT" log -1 --format='%h · %s' | cut -c1-44)"
+  if ! node_read_saved; then ui_fail "The saved settings are incomplete: paste the install line again."; exit 1; fi
+  if [[ $(cat "$SETTINGS_SUM" 2>/dev/null) != "$(node_settings_sum)" ]]; then
+    node_write_settings
+    renewed=1
+    ui_step "Settings renewed (this version writes them differently)"
+  else
+    ui_step "Settings: up to date"
+  fi
   ui_do "Downloading images…" "Images up to date" docker compose --progress quiet pull || exit 1
   ui_do "Starting the new versions…" "Running the new versions" \
     docker compose --progress quiet up -d --wait --wait-timeout 120 || exit 1
+  if ((renewed)); then
+    ui_do "Restarting Wings…" "Wings uses the new settings" docker compose --progress quiet restart wings || exit 1
+  fi
   done_line
 }
 
@@ -628,24 +687,33 @@ show_help() {
 }
 
 # ── Steps: delete (./rustfield-node-delete) ────────────────────────────────────────────────────────────────────
-# Wipes the node: every game server and its files, Wings, the tunnel, their images, the settings, the short command
-# and this folder (user, 2026-10-27: no backup first). Docker and the firewall stay. Run it after
-# `rustfield node delete` on the main server (that removes the node from the panel and Cloudflare).
+# Wipes the node: Wings and the tunnel FIRST (so Wings cannot restart a game server meanwhile), then every game
+# server and its files, their images, the settings, the short command and this folder (user, 2026-10-27: no backup
+# first). Docker and the firewall stay. Run it after `rustfield node delete` on the main server (that removes the node
+# from the panel and Cloudflare).
 D_GAMES=() D_OURS=() D_IMAGES=() D_NETWORKS=() D_FOLDERS=() D_FILES=() D_BYTES=0 D_FAILED=0
 
 delete_begin() { ui_header "$(node_name) · delete"; }
 
 delete_scan() {
   local f
+  # Docker installed but stopped: its boxes, networks and images cannot be seen, so stop here (a delete now would
+  # remove the files and say "done" while the boxes stay).
+  if command -v docker >/dev/null && ! docker info >/dev/null 2>&1; then
+    ui_fail "Docker is not running: start it first (systemctl start docker)."
+    exit 1
+  fi
   ui_spinner_start "Looking at what is installed…"
   D_GAMES=() D_OURS=() D_IMAGES=() D_NETWORKS=() D_FOLDERS=() D_FILES=() D_BYTES=0
-  if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+  if command -v docker >/dev/null; then
     mapfile -t D_GAMES < <(docker ps -aq --filter "label=$GAME_LABEL")
     mapfile -t D_OURS < <(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT")
-    # Images: the ones the game servers and our two boxes use (read before the boxes are gone).
-    if ((${#D_GAMES[@]} + ${#D_OURS[@]} > 0)); then
-      mapfile -t D_IMAGES < <(docker inspect -f '{{.Config.Image}}' "${D_GAMES[@]}" "${D_OURS[@]}" | sort -u)
-    fi
+    # Images: the ones our boxes and the game servers use (read before the boxes are gone), and the game images that
+    # stayed after `rustfield node delete` had already removed the game servers.
+    mapfile -t D_IMAGES < <({
+      if ((${#D_GAMES[@]} + ${#D_OURS[@]} > 0)); then docker inspect -f '{{.Config.Image}}' "${D_GAMES[@]}" "${D_OURS[@]}"; fi
+      docker images --format '{{.Repository}}:{{.Tag}}' | grep -E "$GAME_IMAGES" || true
+    } | sort -u)
     mapfile -t D_NETWORKS < <({ docker network ls -q --filter "label=com.docker.compose.project=$PROJECT"
       docker network ls -q --filter "name=^${GAME_NETWORK}$"; } | sort -u)
   fi
@@ -658,7 +726,8 @@ delete_scan() {
 delete_show() {
   ui_item Games "$(ui_count "${#D_GAMES[@]}" "game server box")"
   ui_item Files "$(ui_size "$D_BYTES") of game files ($GAME_DATA)"
-  ui_item Node "Wings + tunnel: $(ui_count "${#D_OURS[@]}" box), $(ui_count "${#D_IMAGES[@]}" image)"
+  ui_item Node "Wings + tunnel: $(ui_count "${#D_OURS[@]}" box)"
+  ui_item Images "$(ui_count "${#D_IMAGES[@]}" image) (Wings, tunnel, games)"
   ui_item Settings "${D_FOLDERS[*]:-none}"
   ui_item Folder "$ROOT (the original is on GitHub)"
   ui_line "Stays: Docker, the firewall (only SSH open)" "$E_MUTED"
@@ -694,7 +763,8 @@ delete_ours() {
 delete_networks() {
   if ((${#D_NETWORKS[@]})); then delete_do "Networks removed" docker network rm "${D_NETWORKS[@]}"; fi
 }
-# Images: one by one; one that something else on this server still uses is kept.
+# Images: one by one; one that something else on this server still uses is kept. Removed by name and tag, so an
+# image that is still tagged for something else stays too.
 delete_images() {
   local image gone=0
   for image in "${D_IMAGES[@]}"; do

@@ -15,6 +15,7 @@ uses them). Only SSH is open in the firewall.
 
 1. On the main server: `rustfield node add`, fill in the form. It prints one install line.
 2. On the new server (as root): paste that line. It installs Docker if needed, this repo, Wings and the tunnel.
+   If it fails halfway, run `./rustfield-node-install` again in `/root/rustfield-node`: it reuses the saved settings.
 
 ## Every day
 
@@ -23,7 +24,7 @@ uses them). Only SSH is open in the firewall.
 ## Remove a node
 
 1. On the main server: `rustfield node delete` (removes it from the panel and Cloudflare).
-2. On the node: `cd /root/rustfield-node && ./rustfield-node-delete`. It wipes every game server and its files, with
-   no backup. Docker and the firewall stay.
+2. On the node: `cd /root/rustfield-node && ./rustfield-node-delete`. It wipes Wings, the tunnel, every game server
+   and its files, and their images, with no backup. Docker and the firewall stay.
 
 This repo is public and holds no secrets: the node's keys come with the join code and stay in `.env` on the node.
