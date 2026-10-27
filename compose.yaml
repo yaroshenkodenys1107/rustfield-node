@@ -39,7 +39,7 @@ services:
         max-file: "3"
     # No health check: the image has no shell. `rustfield-node status` checks Wings through the tunnel instead.
 
-  # The tunnel: its route (<node>.<domain> → http://wings:8080) is kept in Cloudflare, made by `rustfield node add`.
+  # The tunnel: its route (<node>.<domain> → http://wings:443) is kept in Cloudflare, made by `rustfield node add`.
   cloudflared:
     image: cloudflare/cloudflared:2026.10.4
     container_name: rustfield-node-cloudflared

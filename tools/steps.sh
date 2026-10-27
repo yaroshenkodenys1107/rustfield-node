@@ -453,10 +453,12 @@ debug: false
 uuid: ${JOIN[WINGS_UUID]}
 token_id: ${JOIN[WINGS_TOKEN_ID]}
 token: ${JOIN[WINGS_TOKEN]}
-# Wings listens only inside Docker; the tunnel brings the panel's visits to it (https ends at Cloudflare).
+# Wings listens only inside Docker; the tunnel brings the panel's visits to it (https ends at Cloudflare). Port 443
+# and the rest match what the panel sends Wings after every change of the node in the panel (Wings takes that over):
+# a different value here would be replaced, and the tunnel would lose Wings.
 api:
   host: 0.0.0.0
-  port: 8080
+  port: 443
   ssl:
     enabled: false
   upload_limit: 100
