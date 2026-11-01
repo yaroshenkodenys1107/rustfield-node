@@ -63,5 +63,98 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Monitoring agents (same as on the main server): they push this machine's numbers to the main server ──────────
+  # Only started when this node has its metrics key (COMPOSE_PROFILES=metrics in .env, written by install). They read
+  # this machine and its game servers and push the numbers through Cloudflare (nothing is opened on this server).
+  # node_exporter and the sender run in host mode and listen on 127.0.0.1 only: no firewall rule is needed here.
+  node-exporter:
+    image: prom/node-exporter:v1.12.1
+    container_name: rustfield-node-exporter
+    restart: unless-stopped
+    profiles: [metrics]
+    command:
+      - --path.rootfs=/host
+      - --web.listen-address=127.0.0.1:9100
+    network_mode: host
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9100/metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Reads every box (also each game server). Same settings as on the main server, plus no per-core numbers per box
+  # (keeps the amount of numbers small when a node runs many game servers).
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.6
+    container_name: rustfield-node-cadvisor
+    restart: unless-stopped
+    profiles: [metrics]
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=5s
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service
+      - --disable_metrics=advtcp,cpu_topology,cpuset,hugetlb,memory_numa,process,referenced_memory,resctrl,sched,tcp,udp,percpu
+    networks: [node]
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # The sender: Prometheus in "agent" mode only reads the two agents above and pushes the numbers to the main server
+  # (metrics.<domain>, behind Cloudflare Access). Its settings file agents/prometheus.yml holds the metrics key, so it is
+  # made by install and is never in git. If the main server is not reachable, it keeps the numbers for a while.
+  sender:
+    image: prom/prometheus:v3.15.1
+    container_name: rustfield-node-sender
+    restart: unless-stopped
+    profiles: [metrics]
+    command:
+      - --agent
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.agent.path=/data
+      - --web.listen-address=127.0.0.1:9091
+    network_mode: host
+    volumes:
+      - ./agents/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - sender-data:/data
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9091/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  sender-data:
+
 networks:
   node:

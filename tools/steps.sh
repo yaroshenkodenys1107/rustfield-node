@@ -323,6 +323,10 @@ SETTINGS_SUM=/etc/pterodactyl/rustfield-settings.md5   # see install_settings
 GAME_IMAGES='^ghcr\.io/(pterodactyl|parkervcp|ptero-eggs|pelican-eggs)/|(^|/)(yolks|installers)[:/]'
 # The join code holds these keys (made by `rustfield node add` on the main server).
 JOIN_KEYS=(NODE_NAME NODE_ADDRESS PANEL_URL WINGS_UUID WINGS_TOKEN_ID WINGS_TOKEN TUNNEL_TOKEN)
+# Also in the code since 2026-11-01, but optional (older nodes have none): the node's metrics key. Without it the
+# monitoring agents simply do not start.
+JOIN_OPTIONAL=(METRICS_URL METRICS_ID METRICS_SECRET)
+AGENTS_CONFIG=$ROOT/agents/prometheus.yml   # the sender's settings (holds the metrics key; never in git)
 
 # The value of <key> in this node's .env (made by install from the join code; empty if there is none).
 env_value() {
@@ -404,7 +408,7 @@ install_read_code() {
   # Split at the FIRST "=" only: keys made of base64 can end with "=".
   while IFS= read -r line; do
     key=${line%%=*} value=${line#*=}
-    if [[ " ${JOIN_KEYS[*]} " == *" $key "* && $value =~ ^[A-Za-z0-9._:/+=-]+$ ]]; then JOIN[$key]=$value; fi
+    if [[ " ${JOIN_KEYS[*]} ${JOIN_OPTIONAL[*]} " == *" $key "* && $value =~ ^[A-Za-z0-9._:/+=-]+$ ]]; then JOIN[$key]=$value; fi
   done <<<"$text"
   for key in "${JOIN_KEYS[@]}"; do
     if [[ -z ${JOIN[$key]:-} ]]; then
@@ -454,6 +458,10 @@ install_settings() {
 node_write_settings() {
   umask 077
   node_env_text >"$ROOT/.env"
+  if node_has_metrics; then
+    mkdir -p "$ROOT/agents"
+    node_agents_text >"$AGENTS_CONFIG"
+  fi
   mkdir -p "${WINGS_FOLDERS[@]}"
   node_wings_text >"$WINGS_CONFIG"
   umask 022
@@ -462,7 +470,11 @@ node_write_settings() {
 }
 
 # The fingerprint of what THIS code writes from the saved values (not of the files: Wings rewrites its own file).
-node_settings_sum() { { node_env_text; node_wings_text; node_rotate_text; } | md5sum | cut -d' ' -f1; }
+node_settings_sum() {
+  { node_env_text; node_wings_text; node_rotate_text; if node_has_metrics; then node_agents_text; fi; } | md5sum | cut -d' ' -f1
+}
+# Does this node have its metrics key? (Then the monitoring agents run.)
+node_has_metrics() { [[ -n ${JOIN[METRICS_ID]:-} && -n ${JOIN[METRICS_SECRET]:-} && -n ${JOIN[METRICS_URL]:-} ]]; }
 
 # The three files, as text.
 node_env_text() {
@@ -472,6 +484,41 @@ NODE_NAME=${JOIN[NODE_NAME]}
 NODE_ADDRESS=${JOIN[NODE_ADDRESS]}
 PANEL_URL=${JOIN[PANEL_URL]}
 TUNNEL_TOKEN=${JOIN[TUNNEL_TOKEN]}
+EOT
+  # The monitoring agents start only with a metrics key (the compose file reads COMPOSE_PROFILES from this file).
+  if node_has_metrics; then
+    cat <<EOT
+METRICS_URL=${JOIN[METRICS_URL]}
+METRICS_ID=${JOIN[METRICS_ID]}
+METRICS_SECRET=${JOIN[METRICS_SECRET]}
+COMPOSE_PROFILES=metrics
+EOT
+  fi
+}
+
+# The sender's settings: what to read (the two agents, on this machine only), how often, and where to push. The label
+# machine=<node> is how the main server tells the machines apart. Same job names as on the main server.
+node_agents_text() {
+  cat <<EOT
+# Made by ./rustfield-node-install from the join code. Holds this node's metrics key. NEVER in git.
+global:
+  scrape_interval: 5s
+  external_labels:
+    machine: ${JOIN[NODE_NAME]}
+
+scrape_configs:
+  - job_name: node
+    static_configs:
+      - targets: ["127.0.0.1:9100"]
+  - job_name: containers
+    static_configs:
+      - targets: ["127.0.0.1:8080"]
+
+remote_write:
+  - url: "${JOIN[METRICS_URL]}"
+    headers:
+      CF-Access-Client-Id: "${JOIN[METRICS_ID]}"
+      CF-Access-Client-Secret: "${JOIN[METRICS_SECRET]}"
 EOT
 }
 
@@ -528,6 +575,7 @@ node_read_saved() {
   if [[ ! -f $ROOT/.env || ! -f $WINGS_CONFIG ]]; then return 1; fi
   JOIN[NODE_NAME]=$(env_value NODE_NAME) JOIN[NODE_ADDRESS]=$(env_value NODE_ADDRESS)
   JOIN[TUNNEL_TOKEN]=$(env_value TUNNEL_TOKEN) JOIN[PANEL_URL]=$(env_value PANEL_URL)
+  JOIN[METRICS_URL]=$(env_value METRICS_URL) JOIN[METRICS_ID]=$(env_value METRICS_ID) JOIN[METRICS_SECRET]=$(env_value METRICS_SECRET)
   JOIN[WINGS_UUID]=$(yaml_top uuid) JOIN[WINGS_TOKEN_ID]=$(yaml_top token_id) JOIN[WINGS_TOKEN]=$(yaml_top token)
   # Installs before 2026-10-27 have no PANEL_URL in .env: Wings's file has it.
   if [[ -z ${JOIN[PANEL_URL]} ]]; then JOIN[PANEL_URL]=$(yaml_top remote); fi
@@ -541,7 +589,7 @@ install_images() {
 }
 
 install_start() {
-  ui_do "Starting Wings and the tunnel…" "Wings and the tunnel started" \
+  ui_do "Starting Wings, the tunnel and the agents…" "Wings and the tunnel started" \
     docker compose --progress quiet up -d --wait --wait-timeout 120 || exit 1
 }
 
@@ -616,12 +664,19 @@ done_line() {
 # ── Steps: status ──────────────────────────────────────────────────────────────────────────────────────────────
 # One screen: the node (Wings, tunnel, the road from the panel), its game servers, and the server (memory, CPU, disk).
 show_status() {
-  local wings tunnel road games_up games_all t1 t2 cpu mem_total mem_used disk_used disk_size
+  local wings tunnel road games_up games_all t1 t2 cpu mem_total mem_used disk_used disk_size metrics=''
   ui_spinner_start "Measuring…"
   t1=$(cpu_sample)
   wings=$(docker inspect -f '{{.State.Status}}' "$PROJECT-wings" 2>/dev/null || echo missing)
   tunnel=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
     "$PROJECT-cloudflared" 2>/dev/null || echo missing)
+  # The monitoring agents only exist on a node with a metrics key; the sender's health tells if numbers are pushed.
+  NODE_ROWS=4
+  if [[ -n $(env_value METRICS_ID) ]]; then
+    NODE_ROWS=5
+    metrics=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+      "$PROJECT-sender" 2>/dev/null || echo missing)
+  fi
   if node_reachable; then road=1; else road=0; fi
   games_all=$(docker ps -aq --filter "label=$GAME_LABEL" --filter label=ContainerType=server_process | wc -l)
   games_up=$(docker ps -q --filter "label=$GAME_LABEL" --filter label=ContainerType=server_process | wc -l)
@@ -640,6 +695,7 @@ show_status() {
     "$PROJECT-wings" 2>/dev/null | sed 's/.*://')"
   status_state 3 Tunnel "$(state_color "$tunnel" healthy)" "$tunnel"
   if ((road)); then status_state 4 Panel "$E_OK" "can reach Wings"; else status_state 4 Panel "$E_FAIL" "cannot reach Wings"; fi
+  if [[ -n $metrics ]]; then status_state 5 Metrics "$(state_color "$metrics" healthy)" "$metrics · numbers go to the main server"; fi
   printf '%s\n' "$(ui_stem)"
   printf '%s %sGames%s   %s%d running · %d stopped%s\n' "$(ui_branch 1 2)" "$E_BOLD$E_TEXT" "$E_0" "$E_TEXT" \
     "$games_up" $((games_all - games_up)) "$E_0"
@@ -651,13 +707,14 @@ show_status() {
   printf '%s  %s %s%-6s%s %s%s%s\n' "$(ui_stem)" "$(ui_branch 4 4)" "$E_TEXT2" Up "$E_0" "$E_TEXT" \
     "$(ui_age "$(awk '{print int($1)}' /proc/uptime)" long)" "$E_0"
   printf '%s\n' "$(ui_stem)"
-  if [[ $wings == running && $tunnel == healthy ]] && ((road)); then UI_TREE=1; ui_ok "Everything works"
+  if [[ $wings == running && $tunnel == healthy && ( -z $metrics || $metrics == healthy ) ]] && ((road)); then UI_TREE=1; ui_ok "Everything works"
   else UI_TREE=1; ui_fail "Something is wrong (see above)"; fi
 }
 
+NODE_ROWS=4   # lines in the Node branch (5 with the Metrics line)
 # One node line: <n> <label> <color> <text>
 status_state() {
-  printf '%s  %s %s%-7s%s %s● %s%s\n' "$(ui_stem)" "$(ui_branch "$1" 4)" "$E_TEXT2" "$2" "$E_0" "$3" "$4" "$E_0"
+  printf '%s  %s %s%-7s%s %s● %s%s\n' "$(ui_stem)" "$(ui_branch "$1" "${NODE_ROWS:-4}")" "$E_TEXT2" "$2" "$E_0" "$3" "$4" "$E_0"
 }
 # Green for the good word, red for anything else: <word> <good word>
 state_color() { if [[ $1 == "$2" ]]; then printf '%s' "$E_OK"; else printf '%s' "$E_FAIL"; fi; }
@@ -681,7 +738,7 @@ show_help() {
   ui_title "$(node_name) · help"; printf '\n%s\n' "$(ui_stem)"
   local lines=(
     "status|the node, its game servers, the server"
-    "start|start Wings and the tunnel"
+    "start|start Wings, the tunnel, the agents"
     "stop|stop them (game servers keep running)"
     "restart|restart Wings and the tunnel"
     "update|newest code + image versions"
