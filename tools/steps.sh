@@ -461,6 +461,8 @@ node_write_settings() {
   if node_has_metrics; then
     mkdir -p "$ROOT/agents"
     node_agents_text >"$AGENTS_CONFIG"
+    # The sender runs as the user "nobody" (65534) inside its box: that user, not "everyone", may read the key file.
+    chown 65534:65534 "$AGENTS_CONFIG"
   fi
   mkdir -p "${WINGS_FOLDERS[@]}"
   node_wings_text >"$WINGS_CONFIG"

@@ -126,7 +126,7 @@ services:
 
   # The sender: Prometheus in "agent" mode only reads the two agents above and pushes the numbers to the main server
   # (metrics.<domain>, behind Cloudflare Access). Its settings file agents/prometheus.yml holds the metrics key, so it is
-  # made by install and is never in git. If the main server is not reachable, it keeps the numbers for a while.
+  # made by install and is never in git (readable only by root and by the user this program runs as: 65534). If the main server is not reachable, it keeps the numbers for a while.
   sender:
     image: prom/prometheus:v3.15.1
     container_name: rustfield-node-sender
@@ -135,12 +135,12 @@ services:
     command:
       - --agent
       - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.agent.path=/data
+      - --storage.agent.path=/prometheus
       - --web.listen-address=127.0.0.1:9091
     network_mode: host
     volumes:
       - ./agents/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - sender-data:/data
+      - sender-data:/prometheus
     mem_limit: 1g
     logging:
       driver: json-file
