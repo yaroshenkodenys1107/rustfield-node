@@ -20,6 +20,7 @@ case $CMD in
   stop)           STEPS=(no_args need_root need_docker need_installed begin stop_node) ;;
   restart)        STEPS=(no_args need_root need_docker need_installed begin restart_node) ;;
   update)         STEPS=(no_args need_root need_docker need_installed begin update_node) ;;
+  pin)            STEPS=(no_args need_root need_docker need_installed pin_node) ;;
   help|-h|--help) STEPS=(show_help) ;;
   *)
     ui_fail "Unknown command \"$CMD\"."

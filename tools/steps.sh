@@ -618,7 +618,66 @@ install_connected() {
 install_shortcut() {
   ln -sfn "$ROOT/$PROJECT" "/usr/local/bin/$PROJECT"
   ui_step "Short command: $PROJECT (works in any folder)"
+  pin_timer_install
+  ui_step "CPU pinning of the node's programs: every minute"
   ui_ok "Node $(node_name) is ready. The panel can use it now."
+}
+
+# ── Pinning the node's own programs (user's idea, 2026-11-04) ───────────────────────────────────────────────────────
+# No cores are reserved: every game server has its own cores (the panel sets them). The node's own programs (Wings, the tunnel and
+# the agents) ride on the LAST thread of each game server's cores, because Rust uses the FIRST core most and the last ones are
+# quiet. Docker keeps the setting only until a box is made again, so a systemd timer does it again every minute: it follows
+# every server that is added, deleted or moved. With no pinned game server the programs may use every thread.
+PIN_PROGRAMS=(rustfield-node-wings rustfield-node-cloudflared rustfield-node-exporter rustfield-node-cadvisor rustfield-node-sender)
+PIN_UNIT=rustfield-node-pin
+
+# Prints the threads to use, like "7,15": the last thread of the cores of every running game server. Nothing if there is none.
+pin_targets() {
+  local id cpus last list=()
+  while read -r id; do
+    if [[ -z $id ]]; then continue; fi
+    cpus=$(docker inspect -f '{{.HostConfig.CpusetCpus}}' "$id" 2>/dev/null) || cpus=''
+    if [[ -z $cpus ]]; then continue; fi
+    last=${cpus##*,}
+    last=${last##*-}
+    if [[ $last =~ ^[0-9]+$ ]]; then list+=("$last"); fi
+  done < <(docker ps -q --filter "label=$GAME_LABEL" --filter "label=ContainerType=server_process")
+  if ((${#list[@]})); then printf '%s\n' "${list[@]}" | sort -nu | paste -sd,; fi
+}
+
+pin_node() {
+  local targets name
+  targets=$(pin_targets)
+  for name in "${PIN_PROGRAMS[@]}"; do
+    if ! docker inspect "$name" >/dev/null 2>&1; then continue; fi
+    docker update --cpuset-cpus "${targets:-0-$(($(nproc) - 1))}" "$name" >/dev/null || ui_fail "Could not pin $name."
+  done
+  if [[ -n $targets ]]; then ui_ok "The node's programs run on thread(s) $targets (the last one of each game server's cores)."
+  else ui_ok "No pinned game server: the node's programs may use every thread."; fi
+}
+
+# The timer (systemd): every minute, and a minute and a half after the start. Safe to run again.
+pin_timer_install() {
+  if ! command -v systemctl >/dev/null; then ui_warn "No systemd here: run  $PROJECT pin  by hand after a game server changes."; return 0; fi
+  cat >"/etc/systemd/system/$PIN_UNIT.service" <<UNIT
+[Unit]
+Description=Rustfield.eu node: pin the node's programs to the last core of each game server
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/$PROJECT pin
+UNIT
+  cat >"/etc/systemd/system/$PIN_UNIT.timer" <<UNIT
+[Unit]
+Description=Rustfield.eu node: CPU pinning every minute
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+AccuracySec=10
+[Install]
+WantedBy=timers.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now "$PIN_UNIT.timer" >/dev/null 2>&1
 }
 
 # ── Steps: start, stop, restart, update ───────────────────────────────────────────────────────────────────────
@@ -641,6 +700,7 @@ update_node() {
   else
     ui_step "Settings: up to date"
   fi
+  ui_do "Setting up the CPU pinning…" "CPU pinning of the node's programs: every minute" pin_timer_install || exit 1
   ui_do "Downloading images…" "Images up to date" docker compose --progress quiet pull || exit 1
   ui_do "Starting the new versions…" "Running the new versions" \
     docker compose --progress quiet up -d --wait --wait-timeout 120 || exit 1
@@ -744,6 +804,7 @@ show_help() {
     "stop|stop them (game servers keep running)"
     "restart|restart Wings and the tunnel"
     "update|newest code + image versions"
+    "pin|pin the node's programs to the last core of each game server (a timer does it every minute)"
   )
   local line
   for line in "${lines[@]}"; do ui_item "${line%%|*}" "${line#*|}"; done
@@ -786,7 +847,7 @@ delete_scan() {
   fi
   for f in "${WINGS_FOLDERS[@]}"; do if [[ -e $f ]]; then D_FOLDERS+=("$f"); fi; done
   if [[ -d $GAME_DATA ]]; then D_BYTES=$(du -sb "$GAME_DATA" 2>/dev/null | cut -f1 || echo 0); fi
-  for f in "$LOG_ROTATE" "/usr/local/bin/$PROJECT"; do if [[ -e $f || -L $f ]]; then D_FILES+=("$f"); fi; done
+  for f in "$LOG_ROTATE" "/usr/local/bin/$PROJECT" "/etc/systemd/system/$PIN_UNIT.service" "/etc/systemd/system/$PIN_UNIT.timer"; do if [[ -e $f || -L $f ]]; then D_FILES+=("$f"); fi; done
   ui_spinner_stop
 }
 
@@ -841,7 +902,9 @@ delete_images() {
 }
 delete_files() {
   if ((${#D_FOLDERS[@]})); then delete_do "Game files and settings removed" rm -rf "${D_FOLDERS[@]}"; fi
-  if ((${#D_FILES[@]})); then rm -f "${D_FILES[@]}"; ui_step "Removed: short command, log limit"; fi
+  if command -v systemctl >/dev/null; then systemctl disable --now "$PIN_UNIT.timer" >/dev/null 2>&1 || true; fi
+  if ((${#D_FILES[@]})); then rm -f "${D_FILES[@]}"; ui_step "Removed: short command, log limit, CPU pinning timer"; fi
+  if command -v systemctl >/dev/null; then systemctl daemon-reload || true; fi
 }
 
 # The project folder, LAST and only when everything else worked (after a failure the folder is needed to run delete
